@@ -2,6 +2,20 @@
 name = "ndmcp"
 version = "0.0.0"
 description = "ndmcp"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=2.2,<3",
+    "httpx2>=2.13,<3",
+    "pydantic>=2.12,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1",
+    "pyright>=1.1.414",
+    "black>=26.5",
+    "flake8>=7.3",
+]
 
 [build-system]
 requires = ["flit_core<4"]
