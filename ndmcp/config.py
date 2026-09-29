@@ -11,14 +11,14 @@ from pydantic import HttpUrl
 from pydantic import SecretStr
 from pydantic import ValidationError
 
-from ndmcp.exception import NdmcpExcetion
+from ndmcp.exceptions import NdmcpException
 
 ENV_PREFIX = "NDMCP_"
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
 
-class ConfigError(NdmcpExcetion):
+class ConfigError(NdmcpException):
     """A setting is missing or has a value that is not valid."""
 
 

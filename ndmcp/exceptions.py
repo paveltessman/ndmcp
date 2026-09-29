@@ -1,0 +1,2 @@
+class NdmcpException(Exception):
+    pass
