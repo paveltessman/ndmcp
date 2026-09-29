@@ -2,6 +2,7 @@ import pytest
 
 from ndmcp.library import Library
 from ndmcp.library import normalize
+from ndmcp.library import Plays
 from ndmcp.models import Album
 from ndmcp.models import Artist
 from ndmcp.models import Genre
@@ -34,9 +35,25 @@ def song(
     title: str,
     album_id: str | None = None,
     artist: str | None = None,
+    *,
+    artist_id: str | None = None,
+    genre: str | None = None,
+    plays: int = 0,
 ) -> Song:
-    data = {"id": song_id, "title": title, "albumId": album_id, "artist": artist}
+    data = {
+        "id": song_id,
+        "title": title,
+        "albumId": album_id,
+        "artist": artist,
+        "artistId": artist_id,
+        "genre": genre,
+        "playCount": plays,
+    }
     return Song.model_validate(data)
+
+
+def genre(name: str) -> Genre:
+    return Genre.model_validate({"value": name})
 
 
 SIGUR_ROS = artist("ar1", "Sigur Rós")
@@ -52,7 +69,7 @@ STARALFUR = song("s2", "Starálfur", "al1", "Sigur Rós")
 HOPPIPOLLA = song("s3", "Hoppípolla", "al2", "Sigur Rós")
 LOOSE = song("s4", "Loose track")
 
-POST_ROCK = Genre.model_validate({"value": "Post-Rock"})
+POST_ROCK = genre("Post-Rock")
 
 
 def make_library() -> Library:
@@ -203,3 +220,91 @@ def test_name_without_key_is_not_found():
     library = Library(artists=[dots], albums=[], songs=[], genres=[])
 
     assert library.find_artist("...") == ()
+
+
+ELECTRONIC = genre("Electronic")
+JAZZ = genre("Jazz")
+
+
+def make_played_library() -> Library:
+    # Sigur Rós: 3 + 2 + 4 = 9 plays. múm: 5 plays.
+    songs = [
+        song(
+            "s1", "Svefn-g-englar", "al1", artist_id="ar1", genre="Post-Rock", plays=3
+        ),
+        song("s2", "Starálfur", "al1", artist_id="ar1", genre="Post-Rock", plays=2),
+        song("s3", "Hoppípolla", "al2", artist_id="ar1", genre="Post-Rock", plays=4),
+        song("s5", "Green Grass", "al4", artist_id="ar2", genre="Electronic", plays=5),
+        song("s6", "Unknown", plays=7),
+    ]
+    return Library(
+        artists=[SIGUR_ROS, MUM],
+        albums=[TAKK, BOOTLEG, FINALLY, AGAETIS],
+        songs=songs,
+        genres=[JAZZ, ELECTRONIC, POST_ROCK],
+    )
+
+
+def test_top_artists_sum_song_plays():
+    library = make_played_library()
+
+    assert library.top_artists(10) == (Plays(SIGUR_ROS, 9), Plays(MUM, 5))
+
+
+def test_top_albums_sort_equal_plays_by_name_and_skip_unplayed():
+    library = make_played_library()
+
+    # "Ágætis byrjun" sorts as "agaetis byrjun", so it is before "Finally".
+    assert library.top_albums(10) == (
+        Plays(AGAETIS, 5),
+        Plays(FINALLY, 5),
+        Plays(TAKK, 4),
+    )
+
+
+def test_top_genres_skip_unplayed():
+    library = make_played_library()
+
+    assert library.top_genres(10) == (Plays(POST_ROCK, 9), Plays(ELECTRONIC, 5))
+
+
+def test_top_obeys_the_limit():
+    library = make_played_library()
+
+    assert library.top_albums(2) == (Plays(AGAETIS, 5), Plays(FINALLY, 5))
+    assert library.top_artists(0) == ()
+    assert library.top_artists(-1) == ()
+
+
+def test_song_without_keys_does_not_count():
+    # Song s6 has 7 plays, but no artist, album or genre.
+    library = make_played_library()
+
+    assert sum(count.plays for count in library.top_artists(10)) == 14
+    assert sum(count.plays for count in library.top_albums(10)) == 14
+    assert sum(count.plays for count in library.top_genres(10)) == 14
+
+
+def test_rarely_played_albums_least_played_first():
+    library = make_played_library()
+
+    assert library.rarely_played_albums(max_plays=4, limit=10) == (
+        Plays(BOOTLEG, 0),
+        Plays(TAKK, 4),
+    )
+    assert library.rarely_played_albums(max_plays=0, limit=10) == (Plays(BOOTLEG, 0),)
+
+
+def test_rarely_played_artists():
+    library = make_played_library()
+
+    assert library.rarely_played_artists(max_plays=5, limit=10) == (Plays(MUM, 5),)
+    assert library.rarely_played_artists(max_plays=9, limit=1) == (Plays(MUM, 5),)
+    assert library.rarely_played_artists(max_plays=4, limit=10) == ()
+
+
+def test_statistics_of_empty_library():
+    library = Library(artists=[], albums=[], songs=[], genres=[])
+
+    assert library.top_artists(10) == ()
+    assert library.rarely_played_albums(max_plays=0, limit=10) == ()
