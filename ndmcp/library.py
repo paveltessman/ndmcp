@@ -1,7 +1,9 @@
 # pyright: strict
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 import unicodedata
 from collections.abc import Callable
 from collections.abc import Iterable
@@ -15,6 +17,7 @@ from ndmcp.models import Album
 from ndmcp.models import Artist
 from ndmcp.models import Genre
 from ndmcp.models import Song
+from ndmcp.subsonic import SubsonicClient
 
 T = TypeVar("T")
 
@@ -126,6 +129,47 @@ class Library:
 
     def _album_counts(self) -> list[Plays[Album]]:
         return [Plays(a, self._album_plays.get(a.id, 0)) for a in self.albums]
+
+
+class LibraryCache:
+    """Load the library through Subsonic, and keep it for ttl seconds.
+
+    A failed load raises SubsonicError, and the cache keeps no result of it.
+    """
+
+    def __init__(
+        self,
+        client: SubsonicClient,
+        ttl: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._client = client
+        self._ttl = ttl
+        self._clock = clock
+        # Parallel calls wait for one load, not one load each.
+        self._lock = asyncio.Lock()
+        self._library: Library | None = None
+        self._loaded_at = 0.0
+
+    async def get(self) -> Library:
+        async with self._lock:
+            if self._library is None or self._is_stale():
+                self._library = await self._load()
+                self._loaded_at = self._clock()
+            return self._library
+
+    def _is_stale(self) -> bool:
+        # A ttl of 0 makes each call load again.
+        return self._clock() - self._loaded_at >= self._ttl
+
+    async def _load(self) -> Library:
+        artists, albums, songs, genres = await asyncio.gather(
+            self._client.artists(),
+            self._client.albums(),
+            self._client.songs(),
+            self._client.genres(),
+        )
+        return Library(artists, albums, songs, genres)
 
 
 def normalize(name: str) -> str:

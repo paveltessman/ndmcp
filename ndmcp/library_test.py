@@ -1,12 +1,18 @@
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 
 from ndmcp.library import Library
+from ndmcp.library import LibraryCache
 from ndmcp.library import normalize
 from ndmcp.library import Plays
 from ndmcp.models import Album
 from ndmcp.models import Artist
 from ndmcp.models import Genre
 from ndmcp.models import Song
+from ndmcp.subsonic import SubsonicClient
+from ndmcp.subsonic import SubsonicError
 
 
 def artist(artist_id: str, name: str) -> Artist:
@@ -308,3 +314,118 @@ def test_statistics_of_empty_library():
 
     assert library.top_artists(10) == ()
     assert library.rarely_played_albums(max_plays=0, limit=10) == ()
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def make_client() -> AsyncMock:
+    # Each method has an explicit reply, so no test passes on a MagicMock.
+    client = AsyncMock(spec=SubsonicClient)
+    client.artists.return_value = [SIGUR_ROS]
+    client.albums.return_value = [AGAETIS]
+    client.songs.return_value = [SVEFN]
+    client.genres.return_value = [POST_ROCK]
+    return client
+
+
+def load_count(client: AsyncMock) -> int:
+    counts = {
+        client.artists.await_count,
+        client.albums.await_count,
+        client.songs.await_count,
+        client.genres.await_count,
+    }
+    # Each load calls all four methods.
+    [count] = counts
+    return count
+
+
+@pytest.mark.anyio
+async def test_cache_loads_the_library():
+    client = make_client()
+    cache = LibraryCache(client, ttl=300, clock=FakeClock())
+
+    library = await cache.get()
+
+    assert library.artists == (SIGUR_ROS,)
+    assert library.albums == (AGAETIS,)
+    assert library.songs == (SVEFN,)
+    assert library.genres == (POST_ROCK,)
+    assert load_count(client) == 1
+
+
+@pytest.mark.anyio
+async def test_cache_keeps_the_library_for_the_ttl():
+    client = make_client()
+    clock = FakeClock()
+    cache = LibraryCache(client, ttl=300, clock=clock)
+
+    first = await cache.get()
+    clock.now += 299.9
+    second = await cache.get()
+
+    assert second is first
+    assert load_count(client) == 1
+
+
+@pytest.mark.anyio
+async def test_cache_loads_again_after_the_ttl():
+    client = make_client()
+    clock = FakeClock()
+    cache = LibraryCache(client, ttl=300, clock=clock)
+
+    first = await cache.get()
+    clock.now += 300
+    second = await cache.get()
+
+    assert second is not first
+    assert load_count(client) == 2
+
+
+@pytest.mark.anyio
+async def test_cache_with_zero_ttl_loads_each_time():
+    client = make_client()
+    cache = LibraryCache(client, ttl=0, clock=FakeClock())
+
+    await cache.get()
+    await cache.get()
+
+    assert load_count(client) == 2
+
+
+@pytest.mark.anyio
+async def test_parallel_calls_share_one_load():
+    client = make_client()
+
+    async def slow_songs() -> list[Song]:
+        # The load stops here, so the second call starts during the load.
+        await asyncio.sleep(0)
+        return [SVEFN]
+
+    client.songs.side_effect = slow_songs
+    cache = LibraryCache(client, ttl=300, clock=FakeClock())
+
+    first, second = await asyncio.gather(cache.get(), cache.get())
+
+    assert second is first
+    assert load_count(client) == 1
+
+
+@pytest.mark.anyio
+async def test_failed_load_is_not_kept():
+    client = make_client()
+    client.songs.side_effect = [SubsonicError("Subsonic request failed."), [SVEFN]]
+    cache = LibraryCache(client, ttl=300, clock=FakeClock())
+
+    with pytest.raises(SubsonicError):
+        await cache.get()
+    library = await cache.get()
+
+    assert library.songs == (SVEFN,)
+    assert load_count(client) == 2
