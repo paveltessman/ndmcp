@@ -1,9 +1,12 @@
 # pyright: strict
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections.abc import Callable
 from collections.abc import Iterable
 from typing import Final
+from typing import Protocol
 from typing import TypeVar
 
 from ndmcp.models import Album
@@ -12,6 +15,13 @@ from ndmcp.models import Genre
 from ndmcp.models import Song
 
 T = TypeVar("T")
+
+# Letters that NFKD does not split into a base letter and an accent.
+_LETTERS = str.maketrans({"æ": "ae", "œ": "oe", "ø": "o", "ð": "d", "þ": "th"})
+# A group in brackets at the end, for example "(Remastered 2011)".
+_TRAILING_GROUP = re.compile(r"\s*[(\[][^()\[\]]*[)\]]$")
+_APOSTROPHES = re.compile(r"['’]")
+_PUNCTUATION = re.compile(r"[^\w\s]|_")
 
 
 class Library:
@@ -37,6 +47,10 @@ class Library:
         )
         self._songs_by_album = _group(self.songs, lambda song: song.album_id)
 
+        self._artists_by_key = _group(self.artists, lambda artist: _key(artist.name))
+        self._albums_by_key = _group(self.albums, lambda album: _key(album.name))
+        self._songs_by_key = _group(self.songs, lambda song: _key(song.title))
+
     def artist(self, artist_id: str) -> Artist | None:
         return self._artist_by_id.get(artist_id)
 
@@ -53,6 +67,65 @@ class Library:
     def songs_of(self, album_id: str) -> tuple[Song, ...]:
         """Give the songs of the album, in the order of the load."""
         return self._songs_by_album.get(album_id, ())
+
+    def find_artist(self, name: str) -> tuple[Artist, ...]:
+        """Give the artists with the same normalized name."""
+        return self._artists_by_key.get(normalize(name), ())
+
+    def find_album(self, name: str, artist: str | None = None) -> tuple[Album, ...]:
+        """Give the albums with the same normalized name, and artist if given."""
+        albums = self._albums_by_key.get(normalize(name), ())
+        return _by_artist(albums, artist)
+
+    def find_song(self, title: str, artist: str | None = None) -> tuple[Song, ...]:
+        """Give the songs with the same normalized title, and artist if given."""
+        songs = self._songs_by_key.get(normalize(title), ())
+        return _by_artist(songs, artist)
+
+
+def normalize(name: str) -> str:
+    """Give the key that the candidate check uses to compare two names.
+
+    The key has no case, accents, punctuation, leading "the" or trailing
+    groups in brackets. "The Beatles" and "beatles" give the same key.
+    """
+    text = unicodedata.normalize("NFKD", name.casefold().translate(_LETTERS))
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    text = _strip_trailing_groups(text.replace("&", " and "))
+    text = _PUNCTUATION.sub(" ", _APOSTROPHES.sub("", text))
+    words = text.split()
+    if len(words) > 1 and words[0] == "the":
+        words = words[1:]
+    return " ".join(words)
+
+
+def _strip_trailing_groups(text: str) -> str:
+    # A name that is only a group in brackets keeps the group.
+    while True:
+        stripped = _TRAILING_GROUP.sub("", text.strip())
+        if stripped in (text.strip(), ""):
+            return text
+        text = stripped
+
+
+def _key(name: str) -> str | None:
+    # A name without letters or digits has no key, so no search finds it.
+    return normalize(name) or None
+
+
+class _HasArtist(Protocol):
+    @property
+    def artist(self) -> str | None: ...
+
+
+A = TypeVar("A", bound=_HasArtist)
+
+
+def _by_artist(items: tuple[A, ...], artist: str | None) -> tuple[A, ...]:
+    if artist is None:
+        return items
+    key = normalize(artist)
+    return tuple(item for item in items if _key(item.artist or "") == key)
 
 
 def _album_order(album: Album) -> tuple[bool, int, str]:
