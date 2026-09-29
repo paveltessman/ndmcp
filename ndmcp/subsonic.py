@@ -1,9 +1,14 @@
 # pyright: strict
+from __future__ import annotations
+
 import hashlib
 import secrets
+from collections.abc import Callable
 from collections.abc import Mapping
 from types import TracebackType
 from typing import Any
+from typing import Literal
+from typing import TypeVar
 
 import httpx2
 from pydantic import BaseModel
@@ -13,11 +18,23 @@ from pydantic import ValidationError
 
 from ndmcp.config import Settings
 from ndmcp.exceptions import NdmcpException
+from ndmcp.models import Album
+from ndmcp.models import Artist
+from ndmcp.models import Genre
+from ndmcp.models import Song
 
 API_VERSION = "1.16.1"
 CLIENT_NAME = "ndmcp"
 
+# The number of items in one search3 page.
+PAGE_SIZE = 500
+
 Params = Mapping[str, str | int]
+SearchKind = Literal["artist", "album", "song"]
+SEARCH_KINDS: tuple[SearchKind, ...] = ("artist", "album", "song")
+
+M = TypeVar("M", bound=BaseModel)
+T = TypeVar("T")
 
 
 class SubsonicError(NdmcpException):
@@ -45,6 +62,29 @@ class _Reply(BaseModel):
     body: _Envelope = Field(alias="subsonic-response")
 
 
+class _PingPayload(BaseModel):
+    pass
+
+
+# Navidrome does not send a key when its list is empty.
+class _SearchResult(BaseModel):
+    artist: list[Artist] = []
+    album: list[Album] = []
+    song: list[Song] = []
+
+
+class _SearchPayload(BaseModel):
+    result: _SearchResult = Field(alias="searchResult3", default=_SearchResult())
+
+
+class _GenreList(BaseModel):
+    genre: list[Genre] = []
+
+
+class _GenresPayload(BaseModel):
+    genres: _GenreList = _GenreList()
+
+
 class SubsonicClient:
     def __init__(
         self,
@@ -60,7 +100,7 @@ class SubsonicClient:
             transport=transport,
         )
 
-    async def __aenter__(self) -> "SubsonicClient":
+    async def __aenter__(self) -> SubsonicClient:
         return self
 
     async def __aexit__(
@@ -78,11 +118,53 @@ class SubsonicClient:
         await self._http.aclose()
 
     async def ping(self) -> None:
-        await self._get("ping", None)
+        await self._get("ping", None, _PingPayload)
 
-    async def _get(self, endpoint: str, params: Params | None) -> dict[str, Any]:
+    async def artists(self) -> list[Artist]:
+        return await self._search_all("artist", lambda result: result.artist)
+
+    async def albums(self) -> list[Album]:
+        return await self._search_all("album", lambda result: result.album)
+
+    async def songs(self) -> list[Song]:
+        return await self._search_all("song", lambda result: result.song)
+
+    async def genres(self) -> list[Genre]:
+        payload = await self._get("getGenres", None, _GenresPayload)
+        return payload.genres.genre
+
+    async def _search_all(
+        self,
+        kind: SearchKind,
+        pick: Callable[[_SearchResult], list[T]],
+    ) -> list[T]:
+        # OpenSubsonic servers return all items for an empty search3 query.
+        # A page with less than PAGE_SIZE items is the last page.
+        items: list[T] = []
+        while True:
+            page = pick(await self._search_page(kind, len(items)))
+            items.extend(page)
+            if len(page) < PAGE_SIZE:
+                return items
+
+    async def _search_page(self, kind: SearchKind, offset: int) -> _SearchResult:
+        params: dict[str, str | int] = {"query": ""}
+        for other in SEARCH_KINDS:
+            params[f"{other}Count"] = PAGE_SIZE if other == kind else 0
+        params[f"{kind}Offset"] = offset
+        payload = await self._get("search3", params, _SearchPayload)
+        return payload.result
+
+    async def _get(self, endpoint: str, params: Params | None, model: type[M]) -> M:
         response = await self._send(endpoint, params or {})
-        return _unwrap(endpoint, response)
+        payload = _unwrap(endpoint, response)
+        try:
+            return model.model_validate(payload)
+        except ValidationError:
+            raise SubsonicError(
+                f"Subsonic request {endpoint} failed: "
+                "the reply has an unexpected format."
+            ) from None
 
     async def _send(self, endpoint: str, params: Params) -> httpx2.Response:
         query = {**self._auth_params(), **params}

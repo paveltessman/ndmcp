@@ -4,6 +4,7 @@ from collections.abc import Callable
 import httpx2
 import pytest
 
+from ndmcp import subsonic
 from ndmcp.config import Settings
 from ndmcp.subsonic import SubsonicClient
 from ndmcp.subsonic import SubsonicError
@@ -96,14 +97,144 @@ async def test_timeout_setting_is_used():
     assert timeouts == [{"connect": 2.5, "read": 2.5, "write": 2.5, "pool": 2.5}]
 
 
-async def test_get_returns_payload():
-    def handler(_: httpx2.Request) -> httpx2.Response:
-        return reply(genres={"genre": []})
+def song(number: int) -> dict[str, object]:
+    return {"id": f"s{number}", "title": f"Song {number}"}
+
+
+def search_handler(requests: list[httpx2.Request], sizes: list[int]) -> Handler:
+    # Each reply has the next number of songs from sizes.
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        start = int(request.url.params["songOffset"])
+        size = sizes[len(requests)]
+        requests.append(request)
+        songs = [song(number) for number in range(start, start + size)]
+        return reply(searchResult3={"song": songs})
+
+    return handler
+
+
+async def test_songs_pages_through_search3(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(subsonic, "PAGE_SIZE", 2)
+    requests: list[httpx2.Request] = []
+
+    async with make_client(search_handler(requests, [2, 2, 1])) as client:
+        songs = await client.songs()
+
+    assert [s.id for s in songs] == ["s0", "s1", "s2", "s3", "s4"]
+    assert [r.url.params["songOffset"] for r in requests] == ["0", "2", "4"]
+    for request in requests:
+        assert request.url.path == "/rest/search3"
+        assert request.url.params["query"] == ""
+        assert request.url.params["songCount"] == "2"
+        assert request.url.params["albumCount"] == "0"
+        assert request.url.params["artistCount"] == "0"
+
+
+async def test_songs_stop_on_empty_page_after_full_page(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(subsonic, "PAGE_SIZE", 2)
+    requests: list[httpx2.Request] = []
+
+    async with make_client(search_handler(requests, [2, 0])) as client:
+        songs = await client.songs()
+
+    assert len(songs) == 2
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize(
+    "response",
+    [reply(), reply(searchResult3={})],
+)
+async def test_songs_of_empty_library(response: httpx2.Response):
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return response
 
     async with make_client(handler) as client:
-        payload = await client._get("getGenres", None)
+        songs = await client.songs()
 
-    assert payload == {"version": "1.16.1", "genres": {"genre": []}}
+    assert songs == []
+    assert len(requests) == 1
+
+
+async def test_artists_use_artist_page():
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        artist = {"id": "ar1", "name": "Sigur Rós"}
+        return reply(searchResult3={"artist": [artist]})
+
+    async with make_client(handler) as client:
+        artists = await client.artists()
+
+    assert [a.name for a in artists] == ["Sigur Rós"]
+    [request] = requests
+    assert request.url.params["artistCount"] == "500"
+    assert request.url.params["artistOffset"] == "0"
+    assert request.url.params["albumCount"] == "0"
+    assert request.url.params["songCount"] == "0"
+
+
+async def test_albums_use_album_page():
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        album = {"id": "al1", "name": "Ágætis byrjun"}
+        return reply(searchResult3={"album": [album]})
+
+    async with make_client(handler) as client:
+        albums = await client.albums()
+
+    assert [a.name for a in albums] == ["Ágætis byrjun"]
+    [request] = requests
+    assert request.url.params["albumCount"] == "500"
+    assert request.url.params["albumOffset"] == "0"
+    assert request.url.params["artistCount"] == "0"
+    assert request.url.params["songCount"] == "0"
+
+
+async def test_genres():
+    paths: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        paths.append(request.url.path)
+        genre = {"value": "Post-Rock", "songCount": 25, "albumCount": 3}
+        return reply(genres={"genre": [genre]})
+
+    async with make_client(handler) as client:
+        genres = await client.genres()
+
+    assert paths == ["/rest/getGenres"]
+    assert [(g.name, g.song_count, g.album_count) for g in genres] == [
+        ("Post-Rock", 25, 3)
+    ]
+
+
+async def test_genres_of_empty_library():
+    def handler(_: httpx2.Request) -> httpx2.Response:
+        return reply(genres={})
+
+    async with make_client(handler) as client:
+        assert await client.genres() == []
+
+
+async def test_payload_with_unexpected_format():
+    def handler(_: httpx2.Request) -> httpx2.Response:
+        return reply(searchResult3={"song": [{"title": "No id"}]})
+
+    async with make_client(handler) as client:
+        with pytest.raises(SubsonicError) as info:
+            await client.songs()
+
+    assert str(info.value) == (
+        "Subsonic request search3 failed: the reply has an unexpected format."
+    )
 
 
 async def test_failed_status_gives_code_and_message():
