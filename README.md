@@ -84,3 +84,8 @@ All tools are read-only and give structured output. Each artist and album in a r
 The check tools compare normalized names. The comparison ignores case, accents, punctuation, a leading "The" and trailing groups in brackets, for example "(Remastered)". The artist filter of `check_albums` and `check_songs` matches each credited artist, so "Moore Kismet" matches a song by "Moore Kismet & YAOUNDÉBOXINGCLUB". An empty list of matches means that the library does not have the item.
 
 A play count is the sum of the play counts of the songs. Navidrome counts the plays for the configured user only.
+
+- An artist play count sums the songs that credit the artist. A song with more than one artist counts for each of them, and the songs can be on albums of other artists.
+- An album play count sums all songs of the album, also songs without the album artist.
+
+Thus the play count of an artist and the sum of the play counts of its albums can differ.

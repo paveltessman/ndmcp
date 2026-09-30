@@ -61,17 +61,19 @@ class Library:
         self._album_by_id = {album.id: album for album in self.albums}
         self._song_by_id = {song.id: song for song in self.songs}
         self._albums_by_artist = _group(
-            sorted(self.albums, key=_album_order), lambda album: album.artist_id
+            sorted(self.albums, key=_album_order), _credited_ids
         )
-        self._songs_by_album = _group(self.songs, lambda song: song.album_id)
+        self._songs_by_album = _group(self.songs, lambda song: _one(song.album_id))
 
-        self._artists_by_key = _group(self.artists, lambda artist: _key(artist.name))
-        self._albums_by_key = _group(self.albums, lambda album: _key(album.name))
-        self._songs_by_key = _group(self.songs, lambda song: _key(song.title))
+        self._artists_by_key = _group(
+            self.artists, lambda artist: _one(_key(artist.name))
+        )
+        self._albums_by_key = _group(self.albums, lambda album: _one(_key(album.name)))
+        self._songs_by_key = _group(self.songs, lambda song: _one(_key(song.title)))
 
-        self._artist_plays = _sum_plays(self.songs, lambda song: song.artist_id)
-        self._album_plays = _sum_plays(self.songs, lambda song: song.album_id)
-        self._genre_plays = _sum_plays(self.songs, lambda song: song.genre)
+        self._artist_plays = _sum_plays(self.songs, _credited_ids)
+        self._album_plays = _sum_plays(self.songs, lambda song: _one(song.album_id))
+        self._genre_plays = _sum_plays(self.songs, lambda song: _one(song.genre))
 
     def artist(self, artist_id: str) -> Artist | None:
         return self._artist_by_id.get(artist_id)
@@ -83,7 +85,7 @@ class Library:
         return self._song_by_id.get(song_id)
 
     def albums_of(self, artist_id: str) -> tuple[Album, ...]:
-        """Give the albums of the artist, the oldest first."""
+        """Give the albums that credit the artist, the oldest first."""
         return self._albums_by_artist.get(artist_id, ())
 
     def songs_of(self, album_id: str) -> tuple[Song, ...]:
@@ -105,7 +107,11 @@ class Library:
         return _by_artist(songs, artist)
 
     def artist_plays(self, artist_id: str) -> int:
-        """Give the sum of the play counts of the songs of the artist."""
+        """Give the sum of the play counts of the songs that credit the artist.
+
+        A song with more than one artist counts for each of them. The songs
+        can be on albums of other artists.
+        """
         return self._artist_plays.get(artist_id, 0)
 
     def album_plays(self, album_id: str) -> int:
@@ -254,15 +260,26 @@ def _credit_keys(credits: Iterable[str]) -> set[str]:
 
 
 def _sum_plays(
-    songs: Iterable[Song], key: Callable[[Song], str | None]
+    songs: Iterable[Song], keys: Callable[[Song], Iterable[str]]
 ) -> dict[str, int]:
-    # Songs without a key do not count.
+    # A song counts once for each of its keys. Songs without a key do not count.
     totals: dict[str, int] = {}
     for song in songs:
-        name = key(song)
-        if name is not None:
+        for name in keys(song):
             totals[name] = totals.get(name, 0) + song.play_count
     return totals
+
+
+def _credited_ids(item: Song | Album) -> tuple[str, ...]:
+    # Servers without the "artists" field give only the main artist id.
+    # The same artist can be in the list twice, but it counts once.
+    if item.artists:
+        return tuple(dict.fromkeys(credit.id for credit in item.artists))
+    return _one(item.artist_id)
+
+
+def _one(key: str | None) -> tuple[str, ...]:
+    return () if key is None else (key,)
 
 
 class _HasName(Protocol):
@@ -295,12 +312,12 @@ def _album_order(album: Album) -> tuple[bool, int, str]:
 
 
 def _group(
-    items: Iterable[T], key: Callable[[T], str | None]
+    items: Iterable[T], keys: Callable[[T], Iterable[str]]
 ) -> dict[str, tuple[T, ...]]:
-    # Items without a key are not in a group.
+    # An item is in one group for each of its keys. Items without a key are
+    # not in a group.
     groups: dict[str, list[T]] = {}
     for item in items:
-        name = key(item)
-        if name is not None:
+        for name in keys(item):
             groups.setdefault(name, []).append(item)
     return {name: tuple(group) for name, group in groups.items()}

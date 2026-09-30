@@ -407,6 +407,51 @@ def test_rarely_played_artists():
     assert library.rarely_played_artists(max_plays=4, limit=10) == ()
 
 
+MOORE_KISMET = artist("ar4", "Moore Kismet")
+YAOUNDE = artist("ar5", "YAOUNDÉBOXINGCLUB")
+KISMET_AND_YAOUNDE = [("ar4", "Moore Kismet"), ("ar5", "YAOUNDÉBOXINGCLUB")]
+
+
+def make_collab_library() -> Library:
+    # Moore Kismet: 5 + 3 = 8 plays. YAOUNDÉBOXINGCLUB: 5 plays.
+    songs = [
+        song("s7", "come2find", artist_id="ar4", artists=KISMET_AND_YAOUNDE, plays=5),
+        song("s10", "Solo", artist_id="ar4", plays=3),
+    ]
+    return Library(artists=[MOORE_KISMET, YAOUNDE], albums=[], songs=songs, genres=[])
+
+
+def test_song_plays_count_for_each_credited_artist():
+    library = make_collab_library()
+
+    assert library.artist_plays("ar4") == 8
+    assert library.artist_plays("ar5") == 5
+
+
+def test_featured_artist_is_not_rarely_played():
+    library = make_collab_library()
+
+    assert library.rarely_played_artists(max_plays=0, limit=10) == ()
+    assert library.top_artists(10) == (Plays(MOORE_KISMET, 8), Plays(YAOUNDE, 5))
+
+
+def test_artist_twice_in_the_credits_counts_once():
+    twice = [("ar4", "Moore Kismet"), ("ar4", "Moore Kismet")]
+    songs = [song("s7", "come2find", artist_id="ar4", artists=twice, plays=5)]
+    library = Library(artists=[MOORE_KISMET], albums=[], songs=songs, genres=[])
+
+    assert library.artist_plays("ar4") == 5
+
+
+def test_albums_of_gives_the_albums_of_each_credited_artist():
+    solo = album("al7", "UNIVERSE", "ar4", 2021, "Moore Kismet")
+    collab = album("al8", "Collab", "ar4", 2022, artists=KISMET_AND_YAOUNDE)
+    library = Library(artists=[], albums=[collab, solo], songs=[], genres=[])
+
+    assert library.albums_of("ar4") == (solo, collab)
+    assert library.albums_of("ar5") == (collab,)
+
+
 def test_statistics_of_empty_library():
     library = Library(artists=[], albums=[], songs=[], genres=[])
 

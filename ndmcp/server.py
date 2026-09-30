@@ -186,7 +186,10 @@ async def taste_summary(ctx: LibraryContext, limit: Limit = 10) -> TasteSummary:
 async def artist_details(ctx: LibraryContext, artist_id: str) -> ArtistDetails:
     """Give the artist with its play count, and its albums with play counts.
 
-    Get the artist_id from another tool, for example taste_summary.
+    Get the artist_id from another tool, for example taste_summary. The artist
+    play count sums the songs that credit the artist, also on albums of other
+    artists. An album play count sums all songs of the album, also songs
+    without the artist. So the two counts can differ.
     """
     library = await _library(ctx)
     artist = library.artist(artist_id)
@@ -262,6 +265,7 @@ async def rarely_played_artists(
 
     Use it to find owned music that the user does not play. The least played
     artists come first. The default max_plays of 0 gives only unplayed artists.
+    A play of a song counts for each artist that the song credits.
     """
     library = await _library(ctx)
     counts = library.rarely_played_artists(max_plays, limit)
