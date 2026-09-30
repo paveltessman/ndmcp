@@ -7,6 +7,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Annotated
 from typing import Any
+from typing import TypeVar
 
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver import MCPServer
@@ -42,13 +43,32 @@ MAX_LIMIT = 50
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 
+T = TypeVar("T")
+
 Limit = Annotated[int, Field(ge=1, le=MAX_LIMIT)]
+Name = Annotated[str, Field(min_length=1)]
+# One call checks MAX_LIMIT candidates at most.
+Candidates = Annotated[list[T], Field(min_length=1, max_length=MAX_LIMIT)]
 ClientFactory = Callable[[Settings], SubsonicClient]
 LibraryContext = Context[LibraryCache, Any]
 
 
+class _Input(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
 class _Output(BaseModel):
     model_config = ConfigDict(frozen=True)
+
+
+class AlbumCandidate(_Input):
+    name: Name
+    artist: Name | None = None
+
+
+class SongCandidate(_Input):
+    title: Name
+    artist: Name | None = None
 
 
 class ArtistPlays(_Output):
@@ -104,6 +124,38 @@ class AlbumDetails(_Output):
     songs: list[SongPlays]
 
 
+class ArtistMatch(_Output):
+    name: str
+    # An empty list means that the library does not have the artist.
+    matches: list[ArtistPlays]
+
+
+class AlbumMatch(_Output):
+    name: str
+    artist: str | None
+    # An empty list means that the library does not have the album.
+    matches: list[AlbumPlays]
+
+
+class SongMatch(_Output):
+    title: str
+    artist: str | None
+    # An empty list means that the library does not have the song.
+    matches: list[SongPlays]
+
+
+class ArtistCheck(_Output):
+    results: list[ArtistMatch]
+
+
+class AlbumCheck(_Output):
+    results: list[AlbumMatch]
+
+
+class SongCheck(_Output):
+    results: list[SongMatch]
+
+
 async def taste_summary(ctx: LibraryContext, limit: Limit = 10) -> TasteSummary:
     """Give a compact summary of the music taste of the user.
 
@@ -130,7 +182,7 @@ async def artist_details(ctx: LibraryContext, artist_id: str) -> ArtistDetails:
     if artist is None:
         raise ToolError(f"No artist has the id {artist_id!r}.")
     return ArtistDetails(
-        artist=_artist_plays(Plays(artist, library.artist_plays(artist.id))),
+        artist=_artist_with_plays(library, artist),
         albums=[_album_with_plays(library, a) for a in library.albums_of(artist.id)],
     )
 
@@ -148,6 +200,45 @@ async def album_details(ctx: LibraryContext, album_id: str) -> AlbumDetails:
         album=_album_with_plays(library, album),
         songs=[_song_plays(song) for song in library.songs_of(album.id)],
     )
+
+
+async def check_artists(ctx: LibraryContext, names: Candidates[Name]) -> ArtistCheck:
+    """Find which candidate artists are in the library.
+
+    Use it before you suggest an artist. The check ignores case, accents,
+    punctuation and a leading "The". Each result echoes the candidate, and
+    gives the matches with play counts. No matches means a new artist.
+    """
+    library = await _library(ctx)
+    return ArtistCheck(results=[_artist_match(library, name) for name in names])
+
+
+async def check_albums(
+    ctx: LibraryContext, albums: Candidates[AlbumCandidate]
+) -> AlbumCheck:
+    """Find which candidate albums are in the library.
+
+    Use it before you suggest an album. Give the artist to skip albums of
+    other artists with the same name. The check ignores case, accents,
+    punctuation and trailing groups in brackets, for example "(Remastered)".
+    Each result echoes the candidate, and gives all editions with play counts.
+    """
+    library = await _library(ctx)
+    return AlbumCheck(results=[_album_match(library, album) for album in albums])
+
+
+async def check_songs(
+    ctx: LibraryContext, songs: Candidates[SongCandidate]
+) -> SongCheck:
+    """Find which candidate songs are in the library.
+
+    Use it before you suggest a song. Give the artist to skip songs of other
+    artists with the same title. The check ignores case, accents, punctuation
+    and trailing groups in brackets. Each result echoes the candidate, and
+    gives the matches with play counts.
+    """
+    library = await _library(ctx)
+    return SongCheck(results=[_song_match(library, song) for song in songs])
 
 
 def create_server(
@@ -170,7 +261,15 @@ def create_server(
         log_level=settings.log_level,
         lifespan=lifespan,
     )
-    for tool in (taste_summary, artist_details, album_details):
+    tools = (
+        taste_summary,
+        artist_details,
+        album_details,
+        check_artists,
+        check_albums,
+        check_songs,
+    )
+    for tool in tools:
         server.add_tool(tool, annotations=READ_ONLY)
     return server
 
@@ -224,6 +323,10 @@ def _album_plays(count: Plays[Album]) -> AlbumPlays:
     )
 
 
+def _artist_with_plays(library: Library, artist: Artist) -> ArtistPlays:
+    return _artist_plays(Plays(artist, library.artist_plays(artist.id)))
+
+
 def _album_with_plays(library: Library, album: Album) -> AlbumPlays:
     return _album_plays(Plays(album, library.album_plays(album.id)))
 
@@ -231,6 +334,29 @@ def _album_with_plays(library: Library, album: Album) -> AlbumPlays:
 def _song_plays(song: Song) -> SongPlays:
     return SongPlays(
         id=song.id, title=song.title, artist=song.artist, plays=song.play_count
+    )
+
+
+def _artist_match(library: Library, name: str) -> ArtistMatch:
+    matches = [_artist_with_plays(library, a) for a in library.find_artist(name)]
+    return ArtistMatch(name=name, matches=matches)
+
+
+def _album_match(library: Library, candidate: AlbumCandidate) -> AlbumMatch:
+    albums = library.find_album(candidate.name, candidate.artist)
+    return AlbumMatch(
+        name=candidate.name,
+        artist=candidate.artist,
+        matches=[_album_with_plays(library, album) for album in albums],
+    )
+
+
+def _song_match(library: Library, candidate: SongCandidate) -> SongMatch:
+    songs = library.find_song(candidate.title, candidate.artist)
+    return SongMatch(
+        title=candidate.title,
+        artist=candidate.artist,
+        matches=[_song_plays(song) for song in songs],
     )
 
 

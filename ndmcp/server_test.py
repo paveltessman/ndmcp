@@ -55,10 +55,12 @@ ELECTRONIC = Genre.model_validate({"value": "Electronic"})
 JAZZ = Genre.model_validate({"value": "Jazz"})
 
 
-def song(song_id: str, album: Album, genre: Genre, plays: int) -> Song:
+def song(
+    song_id: str, album: Album, genre: Genre, plays: int, title: str | None = None
+) -> Song:
     data = {
         "id": song_id,
-        "title": song_id,
+        "title": title or song_id,
         "albumId": album.id,
         "artist": album.artist,
         "artistId": album.artist_id,
@@ -113,6 +115,9 @@ async def test_lists_the_read_only_tools():
         "taste_summary",
         "artist_details",
         "album_details",
+        "check_artists",
+        "check_albums",
+        "check_songs",
     ]
     for tool in result.tools:
         assert tool.output_schema is not None
@@ -265,6 +270,102 @@ async def test_details_of_unknown_id_are_a_tool_error(
     error = await call_error(make_client(), tool, **arguments)
 
     assert error == f"Error executing tool {tool}: {message}"
+
+
+@pytest.mark.anyio
+async def test_check_artists_keeps_the_candidate_order():
+    check = await call(
+        make_client(), "check_artists", names=["Radiohead", "SIGUR ROS", "The Mum"]
+    )
+
+    assert check == {
+        "results": [
+            {"name": "Radiohead", "matches": []},
+            {
+                "name": "SIGUR ROS",
+                "matches": [{"id": "ar1", "name": "Sigur Rós", "plays": 7}],
+            },
+            {
+                "name": "The Mum",
+                "matches": [{"id": "ar2", "name": "múm", "plays": 2}],
+            },
+        ]
+    }
+
+
+@pytest.mark.anyio
+async def test_check_albums_with_and_without_artist():
+    albums = [
+        {"name": "takk (Remastered)"},
+        {"name": "Takk...", "artist": "sigur ros"},
+        {"name": "Takk...", "artist": "múm"},
+    ]
+
+    check = await call(make_client(), "check_albums", albums=albums)
+
+    takk = {
+        "id": "al1",
+        "name": "Takk...",
+        "artist": "Sigur Rós",
+        "year": None,
+        "plays": 7,
+    }
+    assert check == {
+        "results": [
+            {"name": "takk (Remastered)", "artist": None, "matches": [takk]},
+            {"name": "Takk...", "artist": "sigur ros", "matches": [takk]},
+            {"name": "Takk...", "artist": "múm", "matches": []},
+        ]
+    }
+
+
+@pytest.mark.anyio
+async def test_check_songs_with_and_without_artist():
+    client = make_client()
+    client.songs.return_value = [song("s1", TAKK, POST_ROCK, 4, title="Hoppípolla")]
+    songs = [
+        {"title": "hoppipolla"},
+        {"title": "Hoppipolla", "artist": "múm"},
+        {"title": "Glósóli"},
+    ]
+
+    check = await call(client, "check_songs", songs=songs)
+
+    hoppipolla = {"id": "s1", "title": "Hoppípolla", "artist": "Sigur Rós", "plays": 4}
+    assert check == {
+        "results": [
+            {"title": "hoppipolla", "artist": None, "matches": [hoppipolla]},
+            {"title": "Hoppipolla", "artist": "múm", "matches": []},
+            {"title": "Glósóli", "artist": None, "matches": []},
+        ]
+    }
+
+
+@pytest.mark.anyio
+async def test_check_accepts_the_maximum_of_candidates():
+    check = await call(make_client(), "check_artists", names=["múm"] * 50)
+
+    assert len(check["results"]) == 50
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("check_artists", {"names": []}),
+        ("check_artists", {"names": ["Sigur Rós"] * 51}),
+        ("check_artists", {"names": [""]}),
+        ("check_albums", {"albums": [{"name": "Takk", "artist": ""}]}),
+        ("check_albums", {"albums": [{"name": "Takk", "year": 2005}]}),
+        ("check_songs", {"songs": [{"name": "Hoppipolla"}]}),
+    ],
+)
+async def test_check_refuses_bad_candidates(tool: str, arguments: dict[str, Any]):
+    client = make_client()
+
+    await call_error(client, tool, **arguments)
+
+    client.songs.assert_not_awaited()
 
 
 @pytest.mark.anyio
