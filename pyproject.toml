@@ -9,6 +9,9 @@ dependencies = [
     "pydantic>=2.12,<3",
 ]
 
+[project.scripts]
+ndmcp = "ndmcp.server:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=9.1",

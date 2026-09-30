@@ -1,0 +1,202 @@
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+from mcp import Client
+
+from ndmcp.config import env_name
+from ndmcp.config import Settings
+from ndmcp.models import Album
+from ndmcp.models import Artist
+from ndmcp.models import Genre
+from ndmcp.models import Song
+from ndmcp.server import create_server
+from ndmcp.server import main
+from ndmcp.subsonic import SubsonicClient
+from ndmcp.subsonic import SubsonicError
+
+SETTINGS = Settings.model_validate(
+    {
+        "url": "https://music.example.com",
+        "username": "user",
+        "password": "hunter2",
+    }
+)
+
+SIGUR_ROS = Artist.model_validate({"id": "ar1", "name": "Sigur Rós"})
+MUM = Artist.model_validate({"id": "ar2", "name": "múm"})
+
+TAKK = Album.model_validate(
+    {"id": "al1", "name": "Takk...", "artist": "Sigur Rós", "artistId": "ar1"}
+)
+FINALLY = Album.model_validate(
+    {
+        "id": "al2",
+        "name": "Finally We Are No One",
+        "artist": "múm",
+        "artistId": "ar2",
+        "year": 2002,
+    }
+)
+
+POST_ROCK = Genre.model_validate({"value": "Post-Rock"})
+ELECTRONIC = Genre.model_validate({"value": "Electronic"})
+JAZZ = Genre.model_validate({"value": "Jazz"})
+
+
+def song(song_id: str, album: Album, genre: Genre, plays: int) -> Song:
+    data = {
+        "id": song_id,
+        "title": song_id,
+        "albumId": album.id,
+        "artistId": album.artist_id,
+        "genre": genre.name,
+        "playCount": plays,
+    }
+    return Song.model_validate(data)
+
+
+def make_client() -> AsyncMock:
+    # Each method has an explicit reply, so no test passes on a MagicMock.
+    client = AsyncMock(spec=SubsonicClient)
+    client.__aenter__.return_value = client
+    client.artists.return_value = [SIGUR_ROS, MUM]
+    client.albums.return_value = [TAKK, FINALLY]
+    client.songs.return_value = [
+        song("s1", TAKK, POST_ROCK, 4),
+        song("s2", TAKK, POST_ROCK, 3),
+        song("s3", FINALLY, ELECTRONIC, 2),
+        Song.model_validate({"id": "s4", "title": "Loose", "playCount": 1}),
+    ]
+    client.genres.return_value = [POST_ROCK, ELECTRONIC, JAZZ]
+    return client
+
+
+async def call(client: AsyncMock, tool: str, **arguments: Any) -> Any:
+    server = create_server(SETTINGS, make_client=lambda _: client)
+    async with Client(server) as session:
+        result = await session.call_tool(tool, arguments)
+    assert not result.is_error, result.content
+    return result.structured_content
+
+
+async def call_error(client: AsyncMock, tool: str, **arguments: Any) -> str:
+    server = create_server(SETTINGS, make_client=lambda _: client)
+    async with Client(server) as session:
+        result = await session.call_tool(tool, arguments)
+    assert result.is_error
+    [content] = result.content
+    assert content.type == "text"
+    return content.text
+
+
+@pytest.mark.anyio
+async def test_lists_the_read_only_tools():
+    server = create_server(SETTINGS, make_client=lambda _: make_client())
+
+    async with Client(server) as session:
+        result = await session.list_tools()
+
+    [tool] = result.tools
+    assert tool.name == "taste_summary"
+    assert tool.output_schema is not None
+    assert tool.annotations is not None
+    assert tool.annotations.read_only_hint is True
+
+
+@pytest.mark.anyio
+async def test_lifespan_opens_and_closes_the_client():
+    client = make_client()
+    settings: list[Settings] = []
+
+    def connect(given: Settings) -> AsyncMock:
+        settings.append(given)
+        return client
+
+    async with Client(create_server(SETTINGS, make_client=connect)):
+        client.__aexit__.assert_not_awaited()
+
+    assert settings == [SETTINGS]
+    client.__aexit__.assert_awaited_once()
+    # The server does not load the library before a tool call.
+    client.songs.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_taste_summary():
+    summary = await call(make_client(), "taste_summary")
+
+    assert summary == {
+        "totals": {"artists": 2, "albums": 2, "songs": 4, "genres": 3, "plays": 10},
+        "top_artists": [
+            {"id": "ar1", "name": "Sigur Rós", "plays": 7},
+            {"id": "ar2", "name": "múm", "plays": 2},
+        ],
+        "top_albums": [
+            {
+                "id": "al1",
+                "name": "Takk...",
+                "artist": "Sigur Rós",
+                "year": None,
+                "plays": 7,
+            },
+            {
+                "id": "al2",
+                "name": "Finally We Are No One",
+                "artist": "múm",
+                "year": 2002,
+                "plays": 2,
+            },
+        ],
+        "top_genres": [
+            {"name": "Post-Rock", "plays": 7},
+            {"name": "Electronic", "plays": 2},
+        ],
+    }
+
+
+@pytest.mark.anyio
+async def test_taste_summary_obeys_the_limit():
+    summary = await call(make_client(), "taste_summary", limit=1)
+
+    assert [item["id"] for item in summary["top_artists"]] == ["ar1"]
+    assert [item["id"] for item in summary["top_albums"]] == ["al1"]
+    assert [item["name"] for item in summary["top_genres"]] == ["Post-Rock"]
+    # The limit does not change the totals.
+    assert summary["totals"]["artists"] == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("limit", [0, 51])
+async def test_taste_summary_refuses_a_limit_out_of_range(limit: int):
+    client = make_client()
+
+    message = await call_error(client, "taste_summary", limit=limit)
+
+    assert "limit" in message
+    client.songs.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_subsonic_error_becomes_a_tool_error():
+    client = make_client()
+    client.songs.side_effect = SubsonicError("Subsonic request search3 timed out.")
+
+    message = await call_error(client, "taste_summary")
+
+    # The SDK adds the name of the tool.
+    assert message == (
+        "Error executing tool taste_summary: Subsonic request search3 timed out."
+    )
+
+
+def test_main_exits_on_a_config_error(monkeypatch: pytest.MonkeyPatch):
+    for field in Settings.model_fields:
+        monkeypatch.delenv(env_name(field), raising=False)
+
+    with pytest.raises(SystemExit) as raised:
+        main()
+
+    message = str(raised.value.code)
+    assert message.startswith("ndmcp: the configuration is not valid.\n")
+    assert "NDMCP_URL is not set." in message
