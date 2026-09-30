@@ -99,6 +99,14 @@ class Library:
         songs = self._songs_by_key.get(normalize(title), ())
         return _by_artist(songs, artist)
 
+    def artist_plays(self, artist_id: str) -> int:
+        """Give the sum of the play counts of the songs of the artist."""
+        return self._artist_plays.get(artist_id, 0)
+
+    def album_plays(self, album_id: str) -> int:
+        """Give the sum of the play counts of the songs of the album."""
+        return self._album_plays.get(album_id, 0)
+
     def top_artists(self, limit: int) -> tuple[Plays[Artist], ...]:
         """Give the most played artists. Artists without plays are not in it."""
         return _top(self._artist_counts(), limit)

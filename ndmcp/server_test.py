@@ -39,6 +39,17 @@ FINALLY = Album.model_validate(
     }
 )
 
+# Sigur Rós has this album too, but no song of it.
+AGAETIS = Album.model_validate(
+    {
+        "id": "al3",
+        "name": "Ágætis byrjun",
+        "artist": "Sigur Rós",
+        "artistId": "ar1",
+        "year": 1999,
+    }
+)
+
 POST_ROCK = Genre.model_validate({"value": "Post-Rock"})
 ELECTRONIC = Genre.model_validate({"value": "Electronic"})
 JAZZ = Genre.model_validate({"value": "Jazz"})
@@ -49,6 +60,7 @@ def song(song_id: str, album: Album, genre: Genre, plays: int) -> Song:
         "id": song_id,
         "title": song_id,
         "albumId": album.id,
+        "artist": album.artist,
         "artistId": album.artist_id,
         "genre": genre.name,
         "playCount": plays,
@@ -97,11 +109,15 @@ async def test_lists_the_read_only_tools():
     async with Client(server) as session:
         result = await session.list_tools()
 
-    [tool] = result.tools
-    assert tool.name == "taste_summary"
-    assert tool.output_schema is not None
-    assert tool.annotations is not None
-    assert tool.annotations.read_only_hint is True
+    assert [tool.name for tool in result.tools] == [
+        "taste_summary",
+        "artist_details",
+        "album_details",
+    ]
+    for tool in result.tools:
+        assert tool.output_schema is not None
+        assert tool.annotations is not None
+        assert tool.annotations.read_only_hint is True
 
 
 @pytest.mark.anyio
@@ -175,6 +191,80 @@ async def test_taste_summary_refuses_a_limit_out_of_range(limit: int):
 
     assert "limit" in message
     client.songs.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_artist_details_give_the_albums_oldest_first():
+    client = make_client()
+    client.albums.return_value = [TAKK, FINALLY, AGAETIS]
+
+    details = await call(client, "artist_details", artist_id="ar1")
+
+    assert details == {
+        "artist": {"id": "ar1", "name": "Sigur Rós", "plays": 7},
+        "albums": [
+            {
+                "id": "al3",
+                "name": "Ágætis byrjun",
+                "artist": "Sigur Rós",
+                "year": 1999,
+                "plays": 0,
+            },
+            {
+                "id": "al1",
+                "name": "Takk...",
+                "artist": "Sigur Rós",
+                "year": None,
+                "plays": 7,
+            },
+        ],
+    }
+
+
+@pytest.mark.anyio
+async def test_album_details_give_the_songs_with_plays():
+    details = await call(make_client(), "album_details", album_id="al1")
+
+    assert details == {
+        "album": {
+            "id": "al1",
+            "name": "Takk...",
+            "artist": "Sigur Rós",
+            "year": None,
+            "plays": 7,
+        },
+        "songs": [
+            {"id": "s1", "title": "s1", "artist": "Sigur Rós", "plays": 4},
+            {"id": "s2", "title": "s2", "artist": "Sigur Rós", "plays": 3},
+        ],
+    }
+
+
+@pytest.mark.anyio
+async def test_album_details_of_album_without_songs():
+    client = make_client()
+    client.albums.return_value = [TAKK, FINALLY, AGAETIS]
+
+    details = await call(client, "album_details", album_id="al3")
+
+    assert details["album"]["plays"] == 0
+    assert details["songs"] == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool", "arguments", "message"),
+    [
+        ("artist_details", {"artist_id": "al1"}, "No artist has the id 'al1'."),
+        ("album_details", {"album_id": "ar1"}, "No album has the id 'ar1'."),
+    ],
+)
+async def test_details_of_unknown_id_are_a_tool_error(
+    tool: str, arguments: dict[str, str], message: str
+):
+    error = await call_error(make_client(), tool, **arguments)
+
+    assert error == f"Error executing tool {tool}: {message}"
 
 
 @pytest.mark.anyio

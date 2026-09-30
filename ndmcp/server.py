@@ -25,6 +25,7 @@ from ndmcp.library import Plays
 from ndmcp.models import Album
 from ndmcp.models import Artist
 from ndmcp.models import Genre
+from ndmcp.models import Song
 from ndmcp.subsonic import SubsonicClient
 from ndmcp.subsonic import SubsonicError
 
@@ -69,6 +70,13 @@ class GenrePlays(_Output):
     plays: int
 
 
+class SongPlays(_Output):
+    id: str
+    title: str
+    artist: str | None
+    plays: int
+
+
 class Totals(_Output):
     artists: int
     albums: int
@@ -85,6 +93,17 @@ class TasteSummary(_Output):
     top_genres: list[GenrePlays]
 
 
+class ArtistDetails(_Output):
+    artist: ArtistPlays
+    # The oldest album first. Albums without a year go last.
+    albums: list[AlbumPlays]
+
+
+class AlbumDetails(_Output):
+    album: AlbumPlays
+    songs: list[SongPlays]
+
+
 async def taste_summary(ctx: LibraryContext, limit: Limit = 10) -> TasteSummary:
     """Give a compact summary of the music taste of the user.
 
@@ -98,6 +117,36 @@ async def taste_summary(ctx: LibraryContext, limit: Limit = 10) -> TasteSummary:
         top_artists=[_artist_plays(count) for count in library.top_artists(limit)],
         top_albums=[_album_plays(count) for count in library.top_albums(limit)],
         top_genres=[_genre_plays(count) for count in library.top_genres(limit)],
+    )
+
+
+async def artist_details(ctx: LibraryContext, artist_id: str) -> ArtistDetails:
+    """Give the artist with its play count, and its albums with play counts.
+
+    Get the artist_id from another tool, for example taste_summary.
+    """
+    library = await _library(ctx)
+    artist = library.artist(artist_id)
+    if artist is None:
+        raise ToolError(f"No artist has the id {artist_id!r}.")
+    return ArtistDetails(
+        artist=_artist_plays(Plays(artist, library.artist_plays(artist.id))),
+        albums=[_album_with_plays(library, a) for a in library.albums_of(artist.id)],
+    )
+
+
+async def album_details(ctx: LibraryContext, album_id: str) -> AlbumDetails:
+    """Give the album with its play count, and its songs with play counts.
+
+    Get the album_id from another tool, for example artist_details.
+    """
+    library = await _library(ctx)
+    album = library.album(album_id)
+    if album is None:
+        raise ToolError(f"No album has the id {album_id!r}.")
+    return AlbumDetails(
+        album=_album_with_plays(library, album),
+        songs=[_song_plays(song) for song in library.songs_of(album.id)],
     )
 
 
@@ -121,7 +170,8 @@ def create_server(
         log_level=settings.log_level,
         lifespan=lifespan,
     )
-    server.add_tool(taste_summary, annotations=READ_ONLY)
+    for tool in (taste_summary, artist_details, album_details):
+        server.add_tool(tool, annotations=READ_ONLY)
     return server
 
 
@@ -171,6 +221,16 @@ def _album_plays(count: Plays[Album]) -> AlbumPlays:
         artist=album.artist,
         year=album.year,
         plays=count.plays,
+    )
+
+
+def _album_with_plays(library: Library, album: Album) -> AlbumPlays:
+    return _album_plays(Plays(album, library.album_plays(album.id)))
+
+
+def _song_plays(song: Song) -> SongPlays:
+    return SongPlays(
+        id=song.id, title=song.title, artist=song.artist, plays=song.play_count
     )
 
 

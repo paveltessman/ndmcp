@@ -251,6 +251,23 @@ def make_played_library() -> Library:
     )
 
 
+def test_plays_of_one_artist_and_album():
+    library = make_played_library()
+
+    assert library.artist_plays("ar1") == 9
+    assert library.artist_plays("ar2") == 5
+    assert library.album_plays("al1") == 5
+    assert library.album_plays("al2") == 4
+
+
+def test_plays_of_unplayed_or_unknown_id_are_zero():
+    library = make_played_library()
+
+    assert library.album_plays("al3") == 0
+    assert library.artist_plays("unknown") == 0
+    assert library.album_plays("unknown") == 0
+
+
 def test_top_artists_sum_song_plays():
     library = make_played_library()
 
