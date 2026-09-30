@@ -25,6 +25,8 @@ SETTINGS = Settings.model_validate(
 
 SIGUR_ROS = Artist.model_validate({"id": "ar1", "name": "Sigur Rós"})
 MUM = Artist.model_validate({"id": "ar2", "name": "múm"})
+# The library has no song of this artist.
+AMIINA = Artist.model_validate({"id": "ar3", "name": "amiina"})
 
 TAKK = Album.model_validate(
     {"id": "al1", "name": "Takk...", "artist": "Sigur Rós", "artistId": "ar1"}
@@ -118,6 +120,8 @@ async def test_lists_the_read_only_tools():
         "check_artists",
         "check_albums",
         "check_songs",
+        "rarely_played_artists",
+        "rarely_played_albums",
     ]
     for tool in result.tools:
         assert tool.output_schema is not None
@@ -361,6 +365,66 @@ async def test_check_accepts_the_maximum_of_candidates():
     ],
 )
 async def test_check_refuses_bad_candidates(tool: str, arguments: dict[str, Any]):
+    client = make_client()
+
+    await call_error(client, tool, **arguments)
+
+    client.songs.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_rarely_played_artists_default_to_unplayed():
+    client = make_client()
+    client.artists.return_value = [SIGUR_ROS, MUM, AMIINA]
+
+    rare = await call(client, "rarely_played_artists")
+
+    assert rare == {"artists": [{"id": "ar3", "name": "amiina", "plays": 0}]}
+
+
+@pytest.mark.anyio
+async def test_rarely_played_artists_least_played_first():
+    client = make_client()
+    client.artists.return_value = [SIGUR_ROS, MUM, AMIINA]
+
+    rare = await call(client, "rarely_played_artists", max_plays=7, limit=2)
+
+    assert [item["id"] for item in rare["artists"]] == ["ar3", "ar2"]
+
+
+@pytest.mark.anyio
+async def test_rarely_played_albums():
+    client = make_client()
+    client.albums.return_value = [TAKK, FINALLY, AGAETIS]
+
+    rare = await call(client, "rarely_played_albums", max_plays=2)
+
+    assert rare == {
+        "albums": [
+            {
+                "id": "al3",
+                "name": "Ágætis byrjun",
+                "artist": "Sigur Rós",
+                "year": 1999,
+                "plays": 0,
+            },
+            {
+                "id": "al2",
+                "name": "Finally We Are No One",
+                "artist": "múm",
+                "year": 2002,
+                "plays": 2,
+            },
+        ]
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("arguments", [{"max_plays": -1}, {"limit": 0}, {"limit": 51}])
+@pytest.mark.parametrize("tool", ["rarely_played_artists", "rarely_played_albums"])
+async def test_rarely_played_refuses_bad_arguments(
+    tool: str, arguments: dict[str, int]
+):
     client = make_client()
 
     await call_error(client, tool, **arguments)
