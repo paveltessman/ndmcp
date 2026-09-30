@@ -230,9 +230,11 @@ async def check_albums(
     """Find which candidate albums are in the library.
 
     Use it before you suggest an album. Give the artist to skip albums of
-    other artists with the same name. The check ignores case, accents,
-    punctuation and trailing groups in brackets, for example "(Remastered)".
-    Each result echoes the candidate, and gives all editions with play counts.
+    other artists with the same name. An album matches when it credits the
+    artist, also as one artist of a collaboration. The check ignores case,
+    accents, punctuation and trailing groups in brackets, for example
+    "(Remastered)". Each result echoes the candidate, and gives all editions
+    with play counts. Read the full names to tell the editions apart.
     """
     library = await _library(ctx)
     return AlbumCheck(results=[_album_match(library, album) for album in albums])
@@ -244,9 +246,10 @@ async def check_songs(
     """Find which candidate songs are in the library.
 
     Use it before you suggest a song. Give the artist to skip songs of other
-    artists with the same title. The check ignores case, accents, punctuation
-    and trailing groups in brackets. Each result echoes the candidate, and
-    gives the matches with play counts.
+    artists with the same title. A song matches when it credits the artist,
+    also as one artist of a collaboration. The check ignores case, accents,
+    punctuation and trailing groups in brackets. Each result echoes the
+    candidate, and gives the matches with play counts.
     """
     library = await _library(ctx)
     return SongCheck(results=[_song_match(library, song) for song in songs])

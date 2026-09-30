@@ -15,6 +15,7 @@ from typing import TypeVar
 
 from ndmcp.models import Album
 from ndmcp.models import Artist
+from ndmcp.models import ArtistRef
 from ndmcp.models import Genre
 from ndmcp.models import Song
 from ndmcp.subsonic import SubsonicClient
@@ -27,6 +28,10 @@ _LETTERS = str.maketrans({"æ": "ae", "œ": "oe", "ø": "o", "ð": "d", "þ": "t
 _TRAILING_GROUP = re.compile(r"\s*[(\[][^()\[\]]*[)\]]$")
 _APOSTROPHES = re.compile(r"['’]")
 _PUNCTUATION = re.compile(r"[^\w\s]|_")
+# A word or sign that joins two artists in one credit, for example "A feat. B".
+_CREDIT_JOIN = re.compile(
+    r"\s*[&,/;]\s*|\s+(?:feat\.?|ft\.?|featuring|x|vs\.?)\s+", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -214,15 +219,38 @@ class _HasArtist(Protocol):
     @property
     def artist(self) -> str | None: ...
 
+    @property
+    def artists(self) -> tuple[ArtistRef, ...]: ...
+
 
 A = TypeVar("A", bound=_HasArtist)
 
 
 def _by_artist(items: tuple[A, ...], artist: str | None) -> tuple[A, ...]:
+    # An item matches when the candidate and the item share one artist.
     if artist is None:
         return items
-    key = normalize(artist)
-    return tuple(item for item in items if _key(item.artist or "") == key)
+    keys = _credit_keys([artist])
+    return tuple(item for item in items if keys & _item_keys(item))
+
+
+def _item_keys(item: _HasArtist) -> set[str]:
+    names = [credit.name for credit in item.artists]
+    if item.artist is not None:
+        names.append(item.artist)
+    return _credit_keys(names)
+
+
+def _credit_keys(credits: Iterable[str]) -> set[str]:
+    # The keys of each full credit and of each artist in it. Servers without
+    # the "artists" field give only the full credit, so the split is needed.
+    keys: set[str] = set()
+    for credit in credits:
+        for name in [credit, *_CREDIT_JOIN.split(credit)]:
+            key = _key(name)
+            if key is not None:
+                keys.add(key)
+    return keys
 
 
 def _sum_plays(

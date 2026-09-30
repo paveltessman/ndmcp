@@ -25,6 +25,8 @@ def album(
     artist_id: str,
     year: int | None = None,
     artist: str | None = None,
+    *,
+    artists: list[tuple[str, str]] | None = None,
 ) -> Album:
     data = {
         "id": album_id,
@@ -32,6 +34,7 @@ def album(
         "artistId": artist_id,
         "year": year,
         "artist": artist,
+        "artists": credits(artists),
     }
     return Album.model_validate(data)
 
@@ -43,6 +46,7 @@ def song(
     artist: str | None = None,
     *,
     artist_id: str | None = None,
+    artists: list[tuple[str, str]] | None = None,
     genre: str | None = None,
     plays: int = 0,
 ) -> Song:
@@ -52,10 +56,15 @@ def song(
         "albumId": album_id,
         "artist": artist,
         "artistId": artist_id,
+        "artists": credits(artists),
         "genre": genre,
         "playCount": plays,
     }
     return Song.model_validate(data)
+
+
+def credits(artists: list[tuple[str, str]] | None) -> list[dict[str, str]]:
+    return [{"id": artist_id, "name": name} for artist_id, name in artists or []]
 
 
 def genre(name: str) -> Genre:
@@ -219,6 +228,78 @@ def test_find_with_artist_skips_items_without_artist():
 
     assert library.find_song("Loose track") == (LOOSE,)
     assert library.find_song("Loose track", artist="") == ()
+
+
+COME2FIND = song(
+    "s7",
+    "come2find",
+    artist="Moore Kismet & YAOUNDÉBOXINGCLUB",
+    artists=[("ar4", "Moore Kismet"), ("ar5", "YAOUNDÉBOXINGCLUB")],
+)
+UNICORN = album(
+    "al6",
+    "Call of the Unicorn",
+    "ar4",
+    artist="Moore Kismet feat. Tasha Baxter",
+    artists=[("ar4", "Moore Kismet"), ("ar6", "Tasha Baxter")],
+)
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "Moore Kismet",
+        "YAOUNDEBOXINGCLUB",
+        "Moore Kismet & YAOUNDEBOXINGCLUB",
+        "YAOUNDEBOXINGCLUB feat. Moore Kismet",
+    ],
+)
+def test_find_song_matches_each_credited_artist(candidate: str):
+    library = Library(artists=[], albums=[], songs=[COME2FIND], genres=[])
+
+    assert library.find_song("come2find", artist=candidate) == (COME2FIND,)
+
+
+def test_find_album_matches_each_credited_artist():
+    library = Library(artists=[], albums=[UNICORN], songs=[], genres=[])
+
+    assert library.find_album("Call of the Unicorn", artist="Tasha Baxter") == (
+        UNICORN,
+    )
+    assert library.find_album("Call of the Unicorn", artist="Skrillex") == ()
+
+
+@pytest.mark.parametrize(
+    "credit",
+    [
+        "Wherefore & Moore Kismet",
+        "Wherefore, Moore Kismet",
+        "Wherefore / Moore Kismet",
+        "Wherefore; Moore Kismet",
+        "Wherefore feat. Moore Kismet",
+        "Wherefore Feat Moore Kismet",
+        "Wherefore ft. Moore Kismet",
+        "Wherefore featuring Moore Kismet",
+        "Wherefore x Moore Kismet",
+        "Wherefore vs. Moore Kismet",
+    ],
+)
+def test_find_song_splits_the_credit_without_artists(credit: str):
+    # Servers without the "artists" field give only the full credit.
+    why2k = song("s8", "WHY2K!", artist=credit)
+    library = Library(artists=[], albums=[], songs=[why2k], genres=[])
+
+    assert library.find_song("WHY2K", artist="Wherefore") == (why2k,)
+    assert library.find_song("WHY2K", artist="moore kismet") == (why2k,)
+    assert library.find_song("WHY2K", artist="Skrillex") == ()
+
+
+def test_find_song_does_not_split_inside_a_name():
+    track = song("s9", "Track", artist="Malcolm X")
+    library = Library(artists=[], albums=[], songs=[track], genres=[])
+
+    assert library.find_song("Track", artist="Malcolm X") == (track,)
+    assert library.find_song("Track", artist="Malcolm") == ()
 
 
 def test_name_without_key_is_not_found():

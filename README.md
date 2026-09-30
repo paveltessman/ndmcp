@@ -81,6 +81,6 @@ All tools are read-only and give structured output. Each artist and album in a r
 | `rarely_played_artists` | `max_plays` (default 0), `limit` (default 20)    | The artists with `max_plays` plays or less, the least played first.             |
 | `rarely_played_albums`  | `max_plays` (default 0), `limit` (default 20)    | The albums with `max_plays` plays or less, the least played first.              |
 
-The check tools compare normalized names. The comparison ignores case, accents, punctuation, a leading "The" and trailing groups in brackets, for example "(Remastered)". An empty list of matches means that the library does not have the item.
+The check tools compare normalized names. The comparison ignores case, accents, punctuation, a leading "The" and trailing groups in brackets, for example "(Remastered)". The artist filter of `check_albums` and `check_songs` matches each credited artist, so "Moore Kismet" matches a song by "Moore Kismet & YAOUNDÉBOXINGCLUB". An empty list of matches means that the library does not have the item.
 
 A play count is the sum of the play counts of the songs. Navidrome counts the plays for the configured user only.
