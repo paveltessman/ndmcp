@@ -3,6 +3,7 @@ from datetime import timezone
 
 from ndmcp.models import Album
 from ndmcp.models import Artist
+from ndmcp.models import ArtistRef
 from ndmcp.models import Genre
 from ndmcp.models import Song
 
@@ -103,3 +104,53 @@ def test_genre_name_comes_from_value():
     assert genre.name == "Post-Rock"
     assert genre.song_count == 25
     assert genre.album_count == 3
+
+
+def test_song_keeps_each_credited_artist():
+    song = Song.model_validate(
+        {
+            "id": "s1",
+            "title": "come2find",
+            "artist": "Moore Kismet & YAOUNDÉBOXINGCLUB",
+            "artistId": "ar1",
+            "displayArtist": "Moore Kismet & YAOUNDÉBOXINGCLUB",
+            "artists": [
+                {"id": "ar1", "name": "Moore Kismet"},
+                {"id": "ar2", "name": "YAOUNDÉBOXINGCLUB"},
+            ],
+        }
+    )
+
+    assert song.artists == (
+        ArtistRef(id="ar1", name="Moore Kismet"),
+        ArtistRef(id="ar2", name="YAOUNDÉBOXINGCLUB"),
+    )
+
+
+def test_album_keeps_each_credited_artist():
+    album = Album.model_validate(
+        {
+            "id": "al1",
+            "name": "Call of the Unicorn",
+            "artist": "Moore Kismet feat. Tasha Baxter",
+            "artistId": "ar1",
+            "artists": [
+                {"id": "ar1", "name": "Moore Kismet"},
+                {"id": "ar3", "name": "Tasha Baxter"},
+            ],
+        }
+    )
+
+    assert album.artists == (
+        ArtistRef(id="ar1", name="Moore Kismet"),
+        ArtistRef(id="ar3", name="Tasha Baxter"),
+    )
+
+
+def test_song_and_album_without_artists_have_none():
+    # Servers without OpenSubsonic do not send "artists".
+    song = Song.model_validate({"id": "s1", "title": "Untitled"})
+    album = Album.model_validate({"id": "al1", "name": "Untitled"})
+
+    assert song.artists == ()
+    assert album.artists == ()

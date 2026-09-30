@@ -18,11 +18,20 @@ class Artist(_Model):
     album_count: int | None = None
 
 
+class ArtistRef(_Model):
+    """One credited artist of a song or album."""
+
+    id: str
+    name: str
+
+
 class Album(_Model):
     id: str
     name: str
     artist: str | None = None
     artist_id: str | None = None
+    # OpenSubsonic servers send each album artist. Older servers do not.
+    artists: tuple[ArtistRef, ...] = ()
     year: int | None = None
     genre: str | None = None
     song_count: int | None = None
@@ -40,6 +49,8 @@ class Song(_Model):
     album_id: str | None = None
     artist: str | None = None
     artist_id: str | None = None
+    # OpenSubsonic servers send each song artist. Older servers do not.
+    artists: tuple[ArtistRef, ...] = ()
     year: int | None = None
     genre: str | None = None
     # In seconds.
